@@ -1,0 +1,10 @@
+services:
+  pdf-excel-converter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./converter.log:/app/converter.log
+    restart: unless-stopped
