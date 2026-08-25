@@ -242,6 +242,13 @@ class PDFToExcelConverter:
         return False
     
     def _find_direct_children(self, data_df):
+        all_values = set()
+        for idx in range(len(data_df)):
+            if len(data_df.columns) > 1:
+                val = str(data_df.iloc[idx, 1]).strip()
+                if val:
+                    all_values.add(val)
+        
         groups = []
         
         for idx in range(len(data_df)):
@@ -264,13 +271,23 @@ class PDFToExcelConverter:
                     if child_segments <= parent_segments:
                         break
                     
-                    if child_val.startswith(prefix) and child_segments == parent_segments + 1:
-                        children.append(child_idx)
+                    if child_val.startswith(prefix):
+                        direct_parent = self._get_parent_of(child_val, all_values)
+                        if direct_parent == val:
+                            children.append(child_idx)
                 
                 if children:
                     groups.append((idx, children))
         
         return groups
+
+    def _get_parent_of(self, value, all_values):
+        parts = value.split('.')
+        for i in range(len(parts) - 1, 0, -1):
+            candidate = '.'.join(parts[:i])
+            if candidate in all_values:
+                return candidate
+        return None
     
     def _apply_sum_formulas(self, ws, data_df, header_row_count):
         groups = self._find_direct_children(data_df)
