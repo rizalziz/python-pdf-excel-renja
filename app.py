@@ -4,10 +4,19 @@ import pandas as pd
 import io
 import logging
 import traceback
+import os
+import requests
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.utils import get_column_letter
+from dotenv import load_dotenv
+from streamlit.components.v1 import html as st_html
+
+load_dotenv()
+
+RECAPTCHA_SITE_KEY = os.getenv("RECAPTCHA_SITE_KEY")
+RECAPTCHA_SECRET_KEY = os.getenv("RECAPTCHA_SECRET_KEY")
 
 
 logging.basicConfig(
@@ -16,6 +25,23 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def verify_recaptcha(token):
+    if not token:
+        return False
+    secret = RECAPTCHA_SECRET_KEY
+    if not secret:
+        return False
+    try:
+        response = requests.post(
+            "https://www.google.com/recaptcha/api/siteverify",
+            data={"secret": secret, "response": token}
+        )
+        result = response.json()
+        return result.get("success", False)
+    except Exception:
+        return False
 
 
 def clean_table_data(table):
@@ -292,6 +318,23 @@ def main():
     st.set_page_config(page_title="PDF ke Excel Converter - SIPD-RI", layout="centered")
     st.title("PDF ke Excel Converter - SIPD-RI")
 
+    if not RECAPTCHA_SITE_KEY or not RECAPTCHA_SECRET_KEY:
+        st.error("Konfigurasi reCAPTCHA tidak ditemukan. Harap set RECAPTCHA_SITE_KEY dan RECAPTCHA_SECRET_KEY di file .env")
+        return
+
+    recaptcha_token = st_html(
+        f"""
+        <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+        <div class="g-recaptcha" data-sitekey="{RECAPTCHA_SITE_KEY}" data-callback="onSubmit"></div>
+        <script>
+        function onSubmit(token) {{
+            Streamlit.setComponentValue(token);
+        }}
+        </script>
+        """,
+        height=100
+    )
+
     uploaded_file = st.file_uploader("Pilih File PDF", type=['pdf'])
 
     col1, col2 = st.columns(2)
@@ -304,6 +347,14 @@ def main():
         st.info(f"File terpilih: **{uploaded_file.name}**")
 
         if st.button("Konversi ke Excel", type="primary", use_container_width=True):
+            if not recaptcha_token:
+                st.error("Silakan selesaikan captcha terlebih dahulu.")
+                return
+
+            if not verify_recaptcha(recaptcha_token):
+                st.error("Verifikasi captcha gagal. Silakan coba lagi.")
+                return
+
             try:
                 with st.spinner("Sedang memproses..."):
                     output, header_count, data_count = convert_pdf_to_excel(
