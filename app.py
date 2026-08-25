@@ -242,13 +242,6 @@ class PDFToExcelConverter:
         return False
     
     def _find_direct_children(self, data_df):
-        value_to_idx = {}
-        for idx in range(len(data_df)):
-            if len(data_df.columns) > 1:
-                val = str(data_df.iloc[idx, 1]).strip()
-                if val and self._is_potential_parent(val):
-                    value_to_idx[val] = idx
-        
         groups = []
         
         for idx in range(len(data_df)):
@@ -261,11 +254,18 @@ class PDFToExcelConverter:
                 parent_segments = len(val.split('.'))
                 children = []
                 
-                for child_val, child_idx in value_to_idx.items():
-                    if child_val.startswith(prefix):
-                        child_segments = len(child_val.split('.'))
-                        if child_segments == parent_segments + 1:
-                            children.append(child_idx)
+                for child_idx in range(idx + 1, len(data_df)):
+                    child_val = str(data_df.iloc[child_idx, 1]).strip()
+                    if not child_val or not self._is_potential_parent(child_val):
+                        continue
+                    
+                    child_segments = len(child_val.split('.'))
+                    
+                    if child_segments <= parent_segments:
+                        break
+                    
+                    if child_val.startswith(prefix) and child_segments == parent_segments + 1:
+                        children.append(child_idx)
                 
                 if children:
                     groups.append((idx, children))
