@@ -1,0 +1,6 @@
+venv/
+.git/
+*.log
+*.pdf
+*.xlsx
+converter.log
