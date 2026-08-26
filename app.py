@@ -1,46 +1,77 @@
-import streamlit as st
-import pdfplumber
-import pandas as pd
+import hashlib
+import hmac
 import io
 import logging
-import traceback
 import os
+import time
+import traceback
+
 import requests
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, Border, Side
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.utils import get_column_letter
 from dotenv import load_dotenv
-from streamlit.components.v1 import html as st_html
+from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.dataframe import dataframe_to_rows
+from pdfplumber import open as pdfplumber_open
+from pandas import DataFrame, isna, notna, to_numeric
 
 load_dotenv()
 
-RECAPTCHA_SITE_KEY = os.getenv("RECAPTCHA_SITE_KEY")
-RECAPTCHA_SECRET_KEY = os.getenv("RECAPTCHA_SECRET_KEY")
-
+TURNSTILE_SITE_KEY = os.getenv("TURNSTILE_SITE_KEY")
+TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY")
+SESSION_SECRET = os.getenv("SESSION_SECRET") or os.urandom(32)
+SESSION_MAX_AGE = 3600  # 1 jam
 
 logging.basicConfig(
-    filename='converter.log',
+    filename="converter.log",
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 
-def verify_recaptcha(token):
+def verify_turnstile(token):
     if not token:
         return False
-    secret = RECAPTCHA_SECRET_KEY
+    secret = TURNSTILE_SECRET_KEY
     if not secret:
         return False
     try:
         response = requests.post(
-            "https://www.google.com/recaptcha/api/siteverify",
-            data={"secret": secret, "response": token}
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+            data={
+                "secret": secret,
+                "response": token,
+            },
         )
         result = response.json()
         return result.get("success", False)
     except Exception:
+        return False
+
+
+def _sign_session(data: str) -> str:
+    key = SESSION_SECRET if isinstance(SESSION_SECRET, bytes) else SESSION_SECRET.encode()
+    return hmac.new(key, data.encode(), hashlib.sha256).hexdigest()
+
+
+def create_session() -> str:
+    ts = str(int(time.time()))
+    return f"{ts}.{_sign_session(ts)}"
+
+
+def verify_session(token: str) -> bool:
+    if not token or "." not in token:
+        return False
+    ts, sig = token.split(".", 1)
+    if not hmac.compare_digest(_sign_session(ts), sig):
+        return False
+    try:
+        return (int(time.time()) - int(ts)) < SESSION_MAX_AGE
+    except ValueError:
         return False
 
 
@@ -56,11 +87,11 @@ def clean_table_data(table):
 
 
 def clean_numeric_value(value):
-    if pd.isna(value) or str(value).strip() == '':
+    if isna(value) or str(value).strip() == "":
         return value
     s = str(value).strip()
-    s = s.replace('.', '')
-    return ''.join(c for c in s if c.isdigit() or c == ',')
+    s = s.replace(".", "")
+    return "".join(c for c in s if c.isdigit() or c == ",")
 
 
 def clean_numeric_columns(df):
@@ -71,16 +102,19 @@ def clean_numeric_columns(df):
         if col_idx < len(df.columns):
             col_name = df.columns[col_idx]
             df[col_name] = df[col_name].apply(clean_numeric_value)
-            df[col_name] = df[col_name].str.replace(',', '.', regex=False)
-            df[col_name] = pd.to_numeric(df[col_name], errors='coerce')
+            df[col_name] = df[col_name].str.replace(",", ".", regex=False)
+            df[col_name] = to_numeric(df[col_name], errors="coerce")
     return df
 
 
 def remove_footer_rows(df, remove_footer):
     if remove_footer:
-        mask = ~df.apply(lambda row: any(
-            'sipd-ri' in str(cell).lower() for cell in row if pd.notna(cell)
-        ), axis=1)
+        mask = ~df.apply(
+            lambda row: any(
+                "sipd-ri" in str(cell).lower() for cell in row if notna(cell)
+            ),
+            axis=1,
+        )
         df = df[mask].reset_index(drop=True)
     return df
 
@@ -94,7 +128,7 @@ def format_excel(ws, auto_width):
                 try:
                     if cell.value:
                         max_length = max(max_length, len(str(cell.value)))
-                except:
+                except Exception:
                     pass
             adjusted_width = min(max_length + 2, 50)
             ws.column_dimensions[column_letter].width = adjusted_width
@@ -102,10 +136,10 @@ def format_excel(ws, auto_width):
     header_font = Font(bold=True, size=11)
     header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     thin_border = Border(
-        left=Side(style='thin'),
-        right=Side(style='thin'),
-        top=Side(style='thin'),
-        bottom=Side(style='thin')
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
     )
 
     for cell in ws[1]:
@@ -123,8 +157,8 @@ def normalize_text(text):
     if text is None:
         return ""
     text = str(text).lower().strip()
-    text = text.replace('\n', ' ').replace('\r', ' ')
-    return ' '.join(text.split())
+    text = text.replace("\n", " ").replace("\r", " ")
+    return " ".join(text.split())
 
 
 def row_values_match_header(row, header_values):
@@ -146,7 +180,7 @@ def is_numbering_row(row):
         return False
     if not cells[0].isdigit():
         return False
-    return all(c.replace('.', '').replace('-', '').isdigit() for c in cells)
+    return all(c.replace(".", "").replace("-", "").isdigit() for c in cells)
 
 
 def is_potential_parent(val):
@@ -155,13 +189,13 @@ def is_potential_parent(val):
         return False
     if len(val) == 1 and val.isdigit():
         return True
-    return '.' in val
+    return "." in val
 
 
 def get_parent_of(value, all_values):
-    parts = value.split('.')
+    parts = value.split(".")
     for i in range(len(parts) - 1, 0, -1):
-        candidate = '.'.join(parts[:i])
+        candidate = ".".join(parts[:i])
         if candidate in all_values:
             return candidate
     return None
@@ -183,7 +217,7 @@ def find_direct_children(data_df):
                 continue
 
             prefix = val + "."
-            parent_segments = len(val.split('.'))
+            parent_segments = len(val.split("."))
             children = []
 
             for child_idx in range(idx + 1, len(data_df)):
@@ -191,7 +225,7 @@ def find_direct_children(data_df):
                 if not child_val or not is_potential_parent(child_val):
                     continue
 
-                child_segments = len(child_val.split('.'))
+                child_segments = len(child_val.split("."))
                 if child_segments <= parent_segments:
                     break
 
@@ -233,7 +267,7 @@ def convert_pdf_to_excel(pdf_file, remove_footer=True, auto_width=True):
     all_tables = []
     master_header_rows = None
 
-    with pdfplumber.open(pdf_file) as pdf:
+    with pdfplumber_open(pdf_file) as pdf:
         total_pages = len(pdf.pages)
         for i, page in enumerate(pdf.pages):
             tables = page.extract_tables()
@@ -268,24 +302,27 @@ def convert_pdf_to_excel(pdf_file, remove_footer=True, auto_width=True):
 
     logger.info(f"PDF berhasil dibuka, total halaman: {total_pages}")
 
-    header_df = pd.DataFrame(master_header_rows)
-    data_df = pd.DataFrame(flat_data)
+    header_df = DataFrame(master_header_rows)
+    data_df = DataFrame(flat_data)
 
     logger.info(f"Data awal: {len(data_df)} baris")
 
     if not data_df.empty:
-        data_df = data_df[~data_df.apply(
-            lambda row: row_values_match_header_rows(row.tolist(), master_header_rows), axis=1
-        )].reset_index(drop=True)
+        data_df = data_df[
+            ~data_df.apply(
+                lambda row: row_values_match_header_rows(row.tolist(), master_header_rows),
+                axis=1,
+            )
+        ].reset_index(drop=True)
         logger.info(f"Setelah filter header: {len(data_df)} baris")
 
     data_df = remove_footer_rows(data_df, remove_footer)
-    data_df = data_df[~data_df.apply(
-        lambda row: is_numbering_row(row.tolist()), axis=1
-    )].reset_index(drop=True)
-    data_df = data_df.dropna(how='all').reset_index(drop=True)
+    data_df = data_df[
+        ~data_df.apply(lambda row: is_numbering_row(row.tolist()), axis=1)
+    ].reset_index(drop=True)
+    data_df = data_df.dropna(how="all").reset_index(drop=True)
     data_df.columns = [str(c) for c in data_df.columns]
-    data_df = data_df.loc[:, ~data_df.columns.str.contains('^Unnamed')]
+    data_df = data_df.loc[:, ~data_df.columns.str.contains("^Unnamed")]
     data_df = clean_numeric_columns(data_df)
 
     logger.info(f"Setelah filter footer/numbering/NaN: {len(data_df)} baris")
@@ -314,72 +351,102 @@ def convert_pdf_to_excel(pdf_file, remove_footer=True, auto_width=True):
     return output, len(master_header_rows), len(data_df)
 
 
-def main():
-    st.set_page_config(page_title="PDF ke Excel Converter - SIPD-RI", layout="centered")
-    st.title("PDF ke Excel Converter - SIPD-RI")
+app = FastAPI(title="PDF ke Excel Converter - SIPD-RI")
 
-    if not RECAPTCHA_SITE_KEY or not RECAPTCHA_SECRET_KEY:
-        st.error("Konfigurasi reCAPTCHA tidak ditemukan. Harap set RECAPTCHA_SITE_KEY dan RECAPTCHA_SECRET_KEY di file .env")
-        return
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    recaptcha_token = st_html(
-        f"""
-        <script src="https://www.google.com/recaptcha/api.js" async defer></script>
-        <div class="g-recaptcha" data-sitekey="{RECAPTCHA_SITE_KEY}" data-callback="onSubmit"></div>
-        <script>
-        function onSubmit(token) {{
-            Streamlit.setComponentValue(token);
-        }}
-        </script>
-        """,
-        height=100
+
+@app.get("/api/config")
+def get_config():
+    if not TURNSTILE_SITE_KEY or not TURNSTILE_SECRET_KEY:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Konfigurasi Turnstile tidak ditemukan. Harap set TURNSTILE_SITE_KEY dan TURNSTILE_SECRET_KEY di file .env"
+            },
+        )
+    return {"turnstile_site_key": TURNSTILE_SITE_KEY}
+
+
+@app.post("/api/verify")
+async def verify(token: str = Form(...)):
+    if not TURNSTILE_SITE_KEY or not TURNSTILE_SECRET_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="Konfigurasi Turnstile tidak ditemukan. Harap set TURNSTILE_SITE_KEY dan TURNSTILE_SECRET_KEY di file .env",
+        )
+
+    if not token or not verify_turnstile(token):
+        raise HTTPException(
+            status_code=403,
+            detail="Verifikasi captcha gagal. Silakan coba lagi.",
+        )
+
+    return {"session": create_session()}
+
+
+@app.post("/api/convert")
+async def convert(
+    session: str = Form(...),
+    file: UploadFile = None,
+    remove_footer: bool = Form(True),
+    auto_width: bool = Form(True),
+):
+    if not TURNSTILE_SITE_KEY or not TURNSTILE_SECRET_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="Konfigurasi Turnstile tidak ditemukan. Harap set TURNSTILE_SITE_KEY dan TURNSTILE_SECRET_KEY di file .env",
+        )
+
+    if not verify_session(session):
+        raise HTTPException(
+            status_code=403,
+            detail="Sesi tidak valid. Silakan verifikasi captcha kembali.",
+        )
+
+    if file is None:
+        raise HTTPException(status_code=400, detail="Silakan upload file PDF terlebih dahulu.")
+
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="File harus berformat PDF.")
+
+    try:
+        contents = await file.read()
+        output, header_count, data_count = convert_pdf_to_excel(
+            io.BytesIO(contents),
+            remove_footer=remove_footer,
+            auto_width=auto_width,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"Terjadi kesalahan: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=error_msg)
+
+    excel_name = (file.filename or "converted").rsplit(".pdf", 1)[0] + ".xlsx"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{excel_name}"',
+        "X-Header-Count": str(header_count),
+        "X-Data-Count": str(data_count),
+        "X-Filename": excel_name,
+        "Access-Control-Expose-Headers": "X-Header-Count, X-Data-Count, X-Filename, Content-Disposition",
+    }
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
     )
-
-    uploaded_file = st.file_uploader("Pilih File PDF", type=['pdf'])
-
-    col1, col2 = st.columns(2)
-    with col1:
-        remove_footer = st.checkbox("Hapus footer 'SIPD-RI***'", value=True)
-    with col2:
-        auto_width = st.checkbox("Auto lebar kolom Excel", value=True)
-
-    if uploaded_file is not None:
-        st.info(f"File terpilih: **{uploaded_file.name}**")
-
-        if st.button("Konversi ke Excel", type="primary", use_container_width=True):
-            if not recaptcha_token:
-                st.error("Silakan selesaikan captcha terlebih dahulu.")
-                return
-
-            if not verify_recaptcha(recaptcha_token):
-                st.error("Verifikasi captcha gagal. Silakan coba lagi.")
-                return
-
-            try:
-                with st.spinner("Sedang memproses..."):
-                    output, header_count, data_count = convert_pdf_to_excel(
-                        uploaded_file,
-                        remove_footer=remove_footer,
-                        auto_width=auto_width,
-                    )
-
-                excel_name = uploaded_file.name.replace('.pdf', '.xlsx')
-                st.success(f"Konversi berhasil! Header: {header_count} baris, Data: {data_count} baris")
-                st.download_button(
-                    label="Download File Excel",
-                    data=output,
-                    file_name=excel_name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-            except Exception as e:
-                error_msg = f"Terjadi kesalahan: {str(e)}"
-                logger.error(error_msg)
-                logger.error(traceback.format_exc())
-                st.error(error_msg)
-    else:
-        st.warning("Silakan upload file PDF terlebih dahulu.")
 
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8501)

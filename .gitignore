@@ -1,5 +1,9 @@
-/Perubahan Renja 2026 dari SIPD RI.pdf
-/Perubahan Renja 2026 dari SIPD RI.xlsx
-/converter.log
 /venv
+/frontend/node_modules
+/frontend/dist
+__pycache__
+*.pyc
 .env
+*.log
+*.pdf
+*.xlsx

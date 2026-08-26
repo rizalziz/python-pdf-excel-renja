@@ -18,49 +18,48 @@ Aplikasi desktop berbasis Python untuk mengubah file PDF yang berisi tabel menja
 
 ## Teknologi yang Digunakan
 
-- Python
-- Tkinter untuk antarmuka pengguna
-- pdfplumber untuk mengekstraksi tabel dari PDF
+- Python (FastAPI) untuk backend API
+- React + TypeScript (Vite) untuk antarmuka pengguna
+- pdfplumber untuk mengekstrak tabel dari PDF
 - pandas untuk pemrosesan data tabular
 - openpyxl untuk membuat dan memformat file Excel
+- Cloudflare Turnstile untuk verifikasi captcha
+- Docker & Docker Compose untuk deployment
+- nginx untuk menyajikan frontend dan mem-proxy `/api` ke backend
 
 ## Persyaratan Sistem
 
-Pastikan Python sudah terinstal di sistem Anda. Versi yang direkomendasikan:
+- Docker dan Docker Compose
+- File `.env` yang berisi:
+  - `TURNSTILE_SITE_KEY`
+  - `TURNSTILE_SECRET_KEY`
 
-- Python 3.8+
-- pip
+## Instalasi & Cara Menjalankan
 
-## Instalasi
-
-1. Buka terminal atau command prompt.
-2. Masuk ke folder project.
-3. Install dependency yang diperlukan:
-
-```bash
-pip install pdfplumber pandas openpyxl
-```
-
-Jika lingkungan Anda sudah memiliki modul yang dibutuhkan, lanjutkan ke langkah berikutnya.
-
-## Cara Menjalankan
-
-Jalankan perintah berikut dari folder project:
+1. Pastikan file `.env` sudah dibuat di folder project dengan konfigurasi Turnstile.
+2. Bangun dan jalankan semua service dengan Docker Compose:
 
 ```bash
-python app.py
+docker compose up --build
 ```
 
-Setelah aplikasi terbuka:
+3. Buka frontend di browser:
 
-1. Pastikan file PDF berada di folder yang sama dengan file `app.py`.
-2. Klik tombol `Scan Folder PDF` untuk menampilkan daftar PDF.
-3. Pilih file PDF yang ingin dikonversi.
-4. Atur opsi konversi sesuai kebutuhan:
+```text
+http://localhost:3000
+```
+
+4. API backend dapat diakses di port `8501` (misal `http://localhost:8501/api/config`).
+
+Cara menggunakan aplikasi:
+
+1. Selesaikan verifikasi Captcha Turnstile.
+2. Pilih file PDF yang ingin dikonversi.
+3. Atur opsi konversi sesuai kebutuhan:
    - hapus footer SIPD-RI
    - auto lebar kolom Excel
-5. Klik tombol `Konversi ke Excel`.
-6. File Excel akan dibuat di folder yang sama dengan nama yang sama seperti file PDF asal, dengan ekstensi `.xlsx`.
+4. Klik tombol `Konversi ke Excel`.
+5. Klik `Download File Excel` untuk menyimpan hasilnya.
 
 ## Alur Kerja Aplikasi
 
